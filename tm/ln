@@ -58,7 +58,7 @@ DRBD_MIN_COUNT="${XPATH_ELEMENTS[j++]:-$DRBD_MIN_COUNT}"
 
 # Get resource name and assign it to the host.
 DRBD_RES_NAME=$SRC_PATH
-drbd_deploy_res_on_host "$DRBD_RES_NAME" "$DST_HOST"
+drbd_deploy_res_on_host "$DRBD_RES_NAME" "$DST_HOST" "writeable"
 
 # Get Device path and make sure it's ready for IO.
 DRBD_DEVICE_PATH=$(drbd_get_device_for_res "$DRBD_RES_NAME")

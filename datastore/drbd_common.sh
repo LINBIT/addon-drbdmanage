@@ -166,6 +166,9 @@ drbd_deploy_res_on_nodes () {
 
     # Otherwise deploy to a redundancy level.
   else
+    if [ -z "$(echo "$DRBD_REDUNDANCY" | xargs)" ]; then
+      DRBD_REDUNDANCY=2 # bugfix for crashing drbdmanage when redundancy is garbage
+    fi
     drbd_log "Deploying resource $res_name with $DRBD_REDUNDANCY-way redundancy."
     sudo drbdmanage deploy-resource "$res_name" "$DRBD_REDUNDANCY" --site "$DRBD_DEPLOYMENT_SITE"
   fi
@@ -180,11 +183,17 @@ drbd_deploy_res_on_nodes () {
 drbd_deploy_res_on_host () {
   res_name=$1
   node_name=$2
-
+  writeable=$3
+  client_option=""
   # Don't try to assign resources if they are already present on a node.
   if [ -z "$(sudo drbdmanage list-assignments --resources "$res_name" --nodes "$node_name" -m)" ]; then
+    if [ "$writeable" = "writeable" ]; then
+      client_option="--client"
+    fi
     drbd_log "Assigning resource $res_name to client node $node_name"
-    sudo drbdmanage assign-resource "$res_name" "$node_name" --client
+    sudo drbdmanage assign-resource "$res_name" "$node_name" "$client_option"
+  else
+    drbd_log "Resource $res_name already present on a node."
   fi
 }
 

@@ -1,0 +1,71 @@
+#!/bin/bash
+
+# Set up environment
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+source "$LIB_LOCATION"/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname "$0")
+source "${DRIVER_PATH}"/../../datastore/drbdmanage/drbdmanage.conf
+source "${DRIVER_PATH}"/../../datastore/drbdmanage/drbd_common.sh
+
+# Get arguments from OpenNebula Core
+DRIVER_ACTION=$1
+IMAGE_ID=$2
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb -b $DRIVER_ACTION"
+
+unset i j XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/DRBD_REDUNDANCY \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/DRBD_DEPLOYMENT_SITE \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/DRBD_DEPLOYMENT_NODES )
+
+DRBD_REDUNDANCY="${XPATH_ELEMENTS[j++]}"
+DRBD_DEPLOYMENT_SITE="${XPATH_ELEMENTS[j++]}"
+DRBD_DEPLOYMENT_NODES="${XPATH_ELEMENTS[j++]}"
+
+# Monitor pool space.
+if [ -n "$DRBD_DEPLOYMENT_NODES" ]; then
+  # Use the smallest pool sizes among the deployment nodes.
+  TOTAL_MB=$(sudo drbdmanage n -N $DRBD_DEPLOYMENT_NODES -m | \
+    awk -F',' '{ if (!total || $4<total) total=$4 } END { print total / 1024 }' | xargs printf "%.0f")
+  FREE_MB=$(sudo drbdmanage n -N $DRBD_DEPLOYMENT_NODES -m | \
+    awk -F',' '{ if (!total || $5<total) total=$5 } END { print total / 1024 }' | xargs printf "%.0f")
+else
+  # Calculate how much space is left for redundant volumes.
+  TOTAL_MB=$(sudo drbdmanage free-space "$DRBD_REDUNDANCY" --site "$DRBD_DEPLOYMENT_SITE" -m | \
+    awk -F',' -v redundancy="$DRBD_REDUNDANCY" '{print $2 / 1024 / redundancy}' | xargs printf "%.0f")
+  FREE_MB=$(sudo drbdmanage n -N $(drbd_get_site_nodes "$DRBD_DEPLOYMENT_SITE") -m | \
+    awk -F',' -v redundancy="$DRBD_REDUNDANCY" 'BEGIN { total=$5 } { total += $5 } END { print total / 1024 / redundancy }' | xargs printf "%.0f")
+fi
+
+USED_MB=$((TOTAL_MB - FREE_MB))
+
+echo "FREE_MB=$FREE_MB"
+echo "USED_MB=$USED_MB"
+echo "TOTAL_MB=$TOTAL_MB"
+
+lines=$(drbdmanage list-volumes -m | ${AWK} -F',' '{print $1,$4}' | ${AWK} -F'-' '{print $4,$5}' |                          ${SED} '/^\s*$/d')
+#       ^^^-returns csv format         ^^^-print only name & size     ^^^-strip name; only vmID,diskID&size will be left      ^^^-strip empty lines
+OLDIFS=${IFS}
+IFS=\n
+for line in ${lines}; do
+    IFS=${OLDIFS} read -a DATA <<<"${line}";
+    vm_id=$(cut -c 3- <<<"${DATA[0]}";)
+    disk_id=$(cut -c 5- <<<"${DATA[1]}";)
+    disk_size_kb=${DATA[2]}
+    disk_size=$((disk_size_kb / 1024))
+    echo -n "VM=[ID=$vm_id,POLL=\""
+    echo -n "DISK_SIZE=[ID=${disk_id},SIZE=${disk_size}] "
+    #todo: implement snapshot monitoring
+    echo "\"]"
+done
+IFS=${OLDIFS}
+

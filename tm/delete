@@ -31,44 +31,52 @@ source "$TMCOMMON"
 DRIVER_PATH=$(dirname "$0")
 source "${DRIVER_PATH}"/../../datastore/drbdmanage/drbdmanage.conf
 source "${DRIVER_PATH}"/../../datastore/drbdmanage/drbd_common.sh
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+source "${DRIVER_PATH}"/eXtract.sh
+
+DST=`fix_dir_slashes $DST`
 
 drbd_log "Beginning delete action."
+drbd_log "Called with DST: ${DST}"
 
 # Get virtualization host information
 DST_PATH=$(arg_path "$DST")
 DST_HOST=$(arg_host "$DST")
 DST_DIR=$(dirname "$DST_PATH")
-DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+DISK_ID=$(eXtract_disk_id_from_path "$DST_PATH")
 
-XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+DS_TYPE=$(eXtract_datastore_param "$DS_ID" "TYPE")
 
-unset i j
+unset i j XPATH_ELEMENTS
 
 while IFS= read -r -d '' element; do
       XPATH_ELEMENTS[i++]="$element"
     done < <(onevm show -x "$VM_ID" | $XPATH \
-                        /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
-                        /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
+                        /VM/TEMPLATE/CONTEXT/DISK_ID)
 
-    DRBD_RES_NAME="${XPATH_ELEMENTS[j++]}"
-    PERSISTENT="${XPATH_ELEMENTS[j++]}"
+    CONTEXT_DISK_ID="${XPATH_ELEMENTS[j++]}"
+
+ DRBD_RES_NAME=$(eXtract_disk_param "$VM_ID" "$DISK_ID" "SOURCE" | xargs)
+ PERSISTENT=$(eXtract_disk_param "$VM_ID" "$DISK_ID" "PERSISTENT")
+
+if [ "$DS_TYPE" = "1" ] && [ -z "$DRBD_RES_NAME" ] ; then
+    DRBD_RES_NAME="OpenNebula-vm-context"
+    DISK_ID=${CONTEXT_DISK_ID}
+fi
 
 # Get information for live migration
-XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
-
-unset XPATH_ELEMENTS
-
-while IFS= read -r -d '' element; do
-  XPATH_ELEMENTS[0]="$element"
-done < <(onedatastore show -x "$DS_ID" | $XPATH /DATASTORE/TEMPLATE/DRBD_SUPPORT_LIVE_MIGRATION)
-
-DRBD_SUPPORT_LIVE_MIGRATION="${XPATH_ELEMENTS[0]:-$DRBD_SUPPORT_LIVE_MIGRATION}"
+DRBD_SUPPORT_LIVE_MIGRATION=$(eXtract_datastore_param "$DS_ID" "DRBD_SUPPORT_LIVE_MIGRATION")
 
 # Link DRBD device to datastore location.
 UNLINK_COMMAND=$(cat <<EOF
     set -e
 
-    rm -f "$DST_PATH"
+    if [ -d "${DST_PATH}" ]; then
+        rm -rf "${DST_PATH}"
+    else
+        rm -f ${DST_PATH}
+    fi
+
 EOF
 )
 
