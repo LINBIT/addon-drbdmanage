@@ -1,1 +1,111 @@
+#!/bin/bash
+#
+# OpenNebula 5.4
+#
+# Arguments: source_host dst_host remote_system_dir vmid dsid template
+#
+# src_host is the host the VM is in.
+# dst_host is the target host to migrate the VM to
+# remote_system_ds_dir is the path for the VM directory in the system datastore in the host
+# vmid is the id of the VM
+# dsid is the target datastore
+# template is the template of the VM in XML and base64 encoded
+#
+
+SRC_HOST=$1
+DST_HOST=$2
+
+#dst system datastore + VM path
+DST_PATH=$3
+
+VM_ID=$4
+DS_ID=$5
+
+TEMPLATE=$6
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON="${ONE_LOCATION}"/var/remotes/tm/tm_common.sh
+fi
+
+source "$TMCOMMON"
+
+DRIVER_PATH=$(dirname "$0")
+source "${DRIVER_PATH}"/../../datastore/drbdmanage/drbdmanage.conf
+source "${DRIVER_PATH}"/../../datastore/drbdmanage/drbd_common.sh
+source "${DRIVER_PATH}"/eXtract.sh
+
+DST_PATH=`fix_dir_slashes $DST_PATH`
+
+DISK_IDS=( $(eXtract_disk_ids "$VM_ID" | xargs) )
+unset i j XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+  done < <(onevm show -x "$VM_ID" | $XPATH \
+                      /VM/TEMPLATE/CONTEXT/DISK_ID)
+
+CONTEXT_DISK_ID="${XPATH_ELEMENTS[j++]}"
+
+if ! [ -z "$CONTEXT_DISK_ID" ]; then
+  DISK_IDS+=("$CONTEXT_DISK_ID")
+fi
+
+# Make a new path for the dst_host
+ssh_make_path "$DST_HOST" "$DST_PATH"
+
+# Get image information
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+
+# Get information for live migration and bridge list.
+BRIDGE_LIST=$(eXtract_datastore_param "$DS_ID" "BRIDGE_LIST")
+DRBD_SUPPORT_LIVE_MIGRATION=$(eXtract_datastore_param "$DS_ID" "DRBD_SUPPORT_LIVE_MIGRATION")
+DRBD_MIN_RATIO=$(eXtract_datastore_param "$DS_ID" "DRBD_MIN_RATIO")
+DRBD_MIN_COUNT=$(eXtract_datastore_param "$DS_ID" "DRBD_MIN_COUNT")
+DS_TYPE=$(eXtract_datastore_param "$DS_ID" "TYPE")
+
+##########################################################
+# Link assigned disks
+for DISK_ID in "${DISK_IDS[@]}"
+do
+
+  DRBD_RES_NAME=$(eXtract_disk_param "$VM_ID" "$DISK_ID" "SOURCE" | xargs)
+  TARGET=$(eXtract_disk_param "$VM_ID" "$DISK_ID" "TARGET")
+  PERSISTENT=$(eXtract_disk_param "$VM_ID" "$DISK_ID" "PERSISTENT")
+  TYPE=$(eXtract_disk_param "$VM_ID" "$DISK_ID" "TYPE")
+
+
+  if [ "$DS_TYPE" = "1" ] && [ "$DISK_ID" = "$CONTEXT_DISK_ID" ] ; then
+      DRBD_RES_NAME="OpenNebula-vm-context"
+  fi
+
+  if [ -z "$PERSISTENT" ] ; then
+      DRBD_RES_NAME="${DRBD_RES_NAME}-vm${VM_ID}-disk${DISK_ID}"
+  fi
+
+  # Deploy disk on destination host
+  drbd_deploy_res_on_host "$DRBD_RES_NAME" "$DST_HOST" "writeable"
+  
+  # Get Device path and make sure it's ready for IO.
+  DRBD_DEVICE_PATH=$(drbd_get_device_for_res "$DRBD_RES_NAME")
+
+  exec_and_log "drbd_is_node_ready $DST_HOST $DRBD_DEVICE_PATH" \
+    "DRBD device at $DRBD_DEVICE_PATH not ready for IO on $DST_HOST, drbdsetup status: $(drbdsetup status --color=never $DRBD_RES_NAME)"
+
+  # Link DRBD device to datastore location.
+  LINK_COMMAND=$(cat <<EOF
+    set -e
+
+    mkdir -p $DST_PATH
+
+    ln -fs "$DRBD_DEVICE_PATH" "$(fix_dir_slashes "$DST_PATH/disk.${DISK_ID}")"
+EOF
+  )
+
+  ssh_exec_and_log "$DST_HOST" "$LINK_COMMAND" \
+            "Error: Unable to link $DRBD_RES_NAME to $DST_PATH on $DST_HOST"
+
+done
+
 exit 0
