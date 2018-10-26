@@ -1,5 +1,7 @@
 # DRBD Manage Storage Driver
 
+# This project is deprecated, please refer to [addon-linstor](https://github.com/LINBIT/addon-linstor)
+
 ## Description
 
 This driver allows for highly available storage using DRBD9 + DRBD Manage in
